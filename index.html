@@ -23,7 +23,7 @@
     }
 
     * { box-sizing: border-box; }
-    html { min-width: 320px; background: var(--paper); }
+    html { background: var(--paper); overflow-x: clip; }
     body {
       margin: 0;
       color: var(--ink);
@@ -32,6 +32,7 @@
         radial-gradient(circle at 96% 14%, rgba(98,125,80,.09), transparent 24rem),
         var(--paper);
       min-height: 100vh;
+      overflow-x: clip;
     }
     button, select, input { font: inherit; }
     button { -webkit-tap-highlight-color: transparent; }
