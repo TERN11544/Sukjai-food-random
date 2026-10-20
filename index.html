@@ -63,11 +63,12 @@
     .count-pill { padding: 6px 10px; border-radius: 999px; color: var(--leaf); background: #edf2e7; font-size: 12px; font-weight: 800; white-space: nowrap; }
     .wheel-wrap { position: relative; width: min(100%, 480px); aspect-ratio: 1; margin: 14px auto 10px; filter: drop-shadow(0 14px 18px rgba(76,54,35,.12)); }
     .wheel-clip { position: absolute; inset: 0; overflow: clip; contain: paint; border-radius: 50%; }
-    .wheel-canvas { display: block; width: 100%; height: 100%; border-radius: 50%; transform: rotate(0rad); }
+    .wheel-canvas { display: block; width: 100%; height: 100%; border-radius: 50%; transform: rotate(0rad); touch-action: manipulation; }
+    .wheel-wrap.is-spinning, .wheel-wrap.is-spinning .wheel-canvas { cursor: pointer; }
     .wheel-pointer {
       position: absolute; z-index: 2; top: -3px; left: 50%; width: 0; height: 0; transform: translateX(-50%);
       border-left: 17px solid transparent; border-right: 17px solid transparent; border-top: 31px solid var(--terra); border-bottom: 0;
-      filter: drop-shadow(0 3px 2px rgba(70,39,28,.18));
+      filter: drop-shadow(0 3px 2px rgba(70,39,28,.18)); pointer-events: none;
     }
     .wheel-hub {
       position: absolute; z-index: 1; top: 50%; left: 50%; width: 22%; aspect-ratio: 1;
@@ -192,7 +193,7 @@
           <div class="wheel-wrap">
             <div class="wheel-pointer" aria-hidden="true"></div>
             <div class="wheel-clip">
-              <canvas class="wheel-canvas" id="wheel" aria-label="วงล้อสุ่มเมนูอาหาร"></canvas>
+            <canvas class="wheel-canvas" id="wheel" role="button" tabindex="0" aria-label="วงล้อสุ่มอาหาร กดเพื่อเริ่มหมุน"></canvas>
             </div>
             <div class="wheel-hub" aria-hidden="true"><span>กิน</span></div>
           </div>
@@ -210,7 +211,7 @@
           <div class="result-box" id="result" aria-live="polite" aria-atomic="true">
             <div class="result-placeholder"><strong>พร้อมแล้วเมื่อคุณพร้อม</strong>กดปุ่มหมุนเพื่อสุ่มเมนูจากรายการที่เลือก</div>
           </div>
-          <p class="microcopy">การสุ่มทำงานในเบราว์เซอร์ ไม่ต้องลงชื่อเข้าใช้หรือเชื่อมต่อฐานข้อมูล</p>
+          <p class="microcopy">จำผลล่าสุดไว้ในเบราว์เซอร์เพื่อลดเมนูซ้ำ การสุ่มไม่ต้องลงชื่อเข้าใช้หรือเชื่อมต่อฐานข้อมูล</p>
         </div>
       </section>
 
@@ -293,6 +294,9 @@
     });
 
     const TAU = Math.PI * 2;
+    const RECENT_STORAGE_KEY = "sukjai-recent-winners-v1";
+    const RECENT_HISTORY_LIMIT = 32;
+    const RECENT_AVOID_COUNT = 8;
     const colors = ["#f4c77d", "#92a87a", "#e99a75", "#e8d98c", "#85a9a2", "#d49b9c", "#c6a578", "#aebc83", "#e7b57b", "#a8a0c5", "#e3c4a0", "#7fa58c"];
     const canvas = document.getElementById("wheel");
     const ctx = canvas.getContext("2d");
@@ -305,10 +309,42 @@
     const menuSummaryCount = document.getElementById("menu-summary-count");
     const listCount = document.getElementById("list-count");
     const wheelHint = document.getElementById("wheel-hint");
+    const wheelWrap = canvas.closest(".wheel-wrap");
     let currentItems = MENU.slice();
     let currentRotation = 0;
     let spinning = false;
-    let lastWinner = null;
+    let recentWinners = loadRecentWinners();
+    let pendingWinner = null;
+    let pendingTarget = null;
+    let spinTimer = null;
+
+    function loadRecentWinners() {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(RECENT_STORAGE_KEY) || "[]");
+        return Array.isArray(saved) ? saved.filter(function (name) { return typeof name === "string"; }).slice(0, RECENT_HISTORY_LIMIT) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function rememberWinner(item) {
+      recentWinners = [item.name].concat(recentWinners.filter(function (name) { return name !== item.name; })).slice(0, RECENT_HISTORY_LIMIT);
+      try { window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(recentWinners)); } catch (_) { /* Recent avoidance remains active for this page session. */ }
+    }
+
+    function eligibleIndices() {
+      const availableNames = new Set(currentItems.map(function (item) { return item.name; }));
+      const cooldownNames = [];
+      for (const name of recentWinners) {
+        if (availableNames.has(name) && !cooldownNames.includes(name)) cooldownNames.push(name);
+        if (cooldownNames.length >= Math.min(RECENT_AVOID_COUNT, currentItems.length - 1)) break;
+      }
+      const cooldown = new Set(cooldownNames);
+      const indices = currentItems.map(function (_, index) { return index; }).filter(function (index) {
+        return !cooldown.has(currentItems[index].name);
+      });
+      return indices.length ? indices : currentItems.map(function (_, index) { return index; });
+    }
 
     function currentCategory() { return categorySelect.value || "ทั้งหมด"; }
     function filteredItems() {
@@ -412,10 +448,15 @@
       const label = currentCategory() === "ทั้งหมด" ? "เมนู" : "เมนูในหมวดนี้";
       wheelCount.textContent = currentItems.length + " " + label;
       menuSummaryCount.textContent = "(" + currentItems.length + " รายการ)";
-      spinButton.disabled = spinning || currentItems.length === 0;
-      wheelHint.textContent = currentItems.length <= 13
-        ? "แต่ละช่องสีแทนหนึ่งเมนู ผลที่สุ่มได้จะแสดงข้าง ๆ"
-        : "วงล้อแสดงทุกเมนูเป็นช่องสี ดูชื่อเมนูที่สุ่มได้หลังวงล้อหยุด";
+      spinButton.disabled = currentItems.length === 0;
+      categorySelect.disabled = spinning;
+      canvas.setAttribute("aria-label", spinning ? "วงล้อกำลังหมุน กดเพื่อหยุดและแสดงผล" : "วงล้อสุ่มอาหาร กดเพื่อเริ่มหมุน");
+      wheelWrap.classList.toggle("is-spinning", spinning);
+      wheelHint.textContent = spinning
+        ? "แตะวงล้อหรือปุ่มเพื่อหยุดและแสดงผลทันที"
+        : currentItems.length <= 13
+          ? "แต่ละช่องสีแทนหนึ่งเมนู ผลที่สุ่มได้จะแสดงข้าง ๆ"
+          : "วงล้อแสดงทุกเมนูเป็นช่องสี ดูชื่อเมนูที่สุ่มได้หลังวงล้อหยุด";
     }
 
     function resetWheel() {
@@ -427,7 +468,6 @@
         canvas.style.transition = "";
         drawWheel();
       });
-      lastWinner = null;
       resultBox.innerHTML = "<div class=\"result-placeholder\"><strong>พร้อมแล้วเมื่อคุณพร้อม</strong>กดปุ่มหมุนเพื่อสุ่มเมนูจากรายการที่เลือก</div>";
       renderCounts();
       renderMenuList();
@@ -461,40 +501,63 @@
       resultBox.appendChild(category);
     }
 
+    function finishSpin() {
+      if (!spinning || !pendingWinner) return;
+      window.clearTimeout(spinTimer);
+      spinTimer = null;
+      currentRotation = pendingTarget % TAU;
+      canvas.style.transition = "none";
+      canvas.style.transform = "rotate(" + currentRotation + "rad)";
+      pendingTarget = null;
+      const item = pendingWinner;
+      pendingWinner = null;
+      spinning = false;
+      rememberWinner(item);
+      showWinner(item);
+      spinButton.textContent = "หมุนอีกครั้ง";
+      renderCounts();
+    }
+
     function spin() {
       if (spinning || !currentItems.length) return;
+      const choices = eligibleIndices();
       spinning = true;
-      spinButton.disabled = true;
-      spinButton.textContent = "กำลังหมุน…";
-      const index = secureRandomIndex(currentItems.length);
+      spinButton.textContent = "หยุดและแสดงผล";
+      const index = choices[secureRandomIndex(choices.length)];
       const item = currentItems[index];
       const slice = TAU / currentItems.length;
       const centerOffset = (index + .5) * slice;
-      const turns = 5 + secureRandomIndex(3);
+      const turns = 4 + secureRandomIndex(5);
       const correction = (TAU - ((currentRotation + centerOffset) % TAU)) % TAU;
       const target = currentRotation + turns * TAU + correction;
       const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const duration = reduced ? 120 : 5200;
+      const duration = reduced ? 120 : 4200 + secureRandomIndex(2601);
+      pendingWinner = item;
+      pendingTarget = target;
       canvas.style.transition = "transform " + duration + "ms cubic-bezier(.12,.72,.08,1)";
       canvas.style.transform = "rotate(" + target + "rad)";
-
-      window.setTimeout(function () {
-        currentRotation = target % TAU;
-        canvas.style.transition = "none";
-        canvas.style.transform = "rotate(" + currentRotation + "rad)";
-        lastWinner = item;
-        showWinner(item);
-        spinning = false;
-        spinButton.disabled = false;
-        spinButton.textContent = "หมุนอีกครั้ง";
-        renderCounts();
-      }, duration + 80);
+      renderCounts();
+      spinTimer = window.setTimeout(finishSpin, duration + 80);
     }
 
     populateCategories();
     categorySelect.addEventListener("change", resetWheel);
     searchInput.addEventListener("input", renderMenuList);
-    spinButton.addEventListener("click", spin);
+    spinButton.addEventListener("click", function () {
+      if (spinning) finishSpin();
+      else spin();
+    });
+    canvas.addEventListener("click", function () {
+      if (spinning) finishSpin();
+      else spin();
+    });
+    canvas.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (spinning) finishSpin();
+        else spin();
+      }
+    });
     window.addEventListener("resize", drawWheel, { passive: true });
     if ("ResizeObserver" in window) new ResizeObserver(drawWheel).observe(canvas.parentElement);
     resetWheel();
